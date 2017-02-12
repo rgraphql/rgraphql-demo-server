@@ -11,10 +11,10 @@ import (
 // Wrapper for a message on the stream.
 type Message struct {
 	// Socket bus binary data, encoded in base64
-	Base64Payload string `json:"b"`
+	Base64Payload string `json:"b,omitempty"`
 	// If we want json-only encoding, it will come in as such
-	ClientMessage *proto.RGQLClientMessage `json:"jc"`
-	ServerMessage *proto.RGQLServerMessage `json:"js"`
+	ClientMessage *proto.RGQLClientMessage `json:"jc,omitempty"`
+	ServerMessage *proto.RGQLServerMessage `json:"js,omitempty"`
 }
 
 func NewMessage(msg *proto.RGQLServerMessage, useJson bool) (*Message, error) {

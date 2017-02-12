@@ -50,7 +50,7 @@ func (c *WSClient) handleMessageRaw(b string) {
 func (c *WSClient) sendWorker() {
 	done := c.ctx.Done()
 	suj := make(chan bool, 1)
-	useJson := true
+	useJson := false
 	c.setUseJson = suj
 	for {
 		select {

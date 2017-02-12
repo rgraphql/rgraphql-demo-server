@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"time"
-
-	log "github.com/Sirupsen/logrus"
 )
 
 var schemaAst string = `
@@ -15,6 +13,7 @@ type Person {
 
 type RootQuery {
 	allPeople: [Person]
+	person(name: String): Person
 }
 
 schema {
@@ -31,6 +30,16 @@ func (r *RootQueryResolver) AllPeople() []*PersonResolver {
 	}
 }
 
+func (r *RootQueryResolver) Person(args *struct{ Name string }) *PersonResolver {
+	if args == nil || args.Name == "" {
+		return nil
+	}
+
+	return &PersonResolver{
+		name: args.Name,
+	}
+}
+
 type PersonResolver struct {
 	name  string
 	steps int
@@ -43,7 +52,6 @@ func (r *PersonResolver) Name() string {
 func (r *PersonResolver) Steps(ctx context.Context, output chan<- int) error {
 	done := ctx.Done()
 	for {
-		log.WithField("steps", r.steps).Debug("Sending steps increment")
 		output <- r.steps
 		r.steps++
 
