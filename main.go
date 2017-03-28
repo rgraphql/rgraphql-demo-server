@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	log "github.com/Sirupsen/logrus"
+	"github.com/rgraphql/magellan"
 	"github.com/rs/cors"
 )
 
@@ -12,13 +13,14 @@ var ListenStr string = ":3001"
 func main() {
 	log.SetLevel(log.DebugLevel)
 
-	server, err := NewWebServer()
+	schema, err := magellan.ParseSchema(schemaAst, &RootQueryResolver{}, nil)
 	if err != nil {
 		panic(err)
 	}
 
+	server := NewWebServer(schema)
 	mux := http.NewServeMux()
-	mux.Handle("/socket.io/", server.WSServer)
+	mux.Handle("/sock", server)
 
 	log.WithField("listen", ListenStr).Info("Listening")
 	handler := cors.New(cors.Options{

@@ -2,93 +2,84 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"sync"
 
 	log "github.com/Sirupsen/logrus"
-	"github.com/googollee/go-socket.io"
+	"github.com/gorilla/websocket"
 	"github.com/rgraphql/magellan"
 	proto "github.com/rgraphql/rgraphql/pkg/proto"
 )
 
 type WebServer struct {
-	WSServer      *socketio.Server
-	Clients       map[string]*WSClient
-	ClientsMtx    sync.RWMutex
-	GraphQLServer *magellan.Server
-	Context       context.Context
-	ContextCancel context.CancelFunc
+	clients    map[uint32]*WSClient
+	clientsMtx sync.RWMutex
+	clientsCtr uint32
+
+	gqlServer *magellan.Server
 }
 
-func NewWebServer() (*WebServer, error) {
-	server, err := socketio.NewServer(nil)
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+}
+
+func init() {
+	upgrader.CheckOrigin = func(r *http.Request) bool {
+		return true
+	}
+}
+
+func NewWebServer(
+	gqlServer *magellan.Server,
+) *WebServer {
+	return &WebServer{
+		clients:   make(map[uint32]*WSClient),
+		gqlServer: gqlServer,
+	}
+}
+
+func (ws *WebServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		return nil, err
+		log.WithError(err).Error("Unable to upgrade WS connection")
+		return
 	}
 
-	gsrv, err := magellan.ParseSchema(schemaAst, &RootQueryResolver{})
-	if err != nil {
-		return nil, err
-	}
+	sendQueue := make(chan *proto.RGQLServerMessage, 20)
+
+	ws.clientsMtx.Lock()
+	ws.clientsCtr++
+	id := ws.clientsCtr
 
 	ctx, ctxCancel := context.WithCancel(context.Background())
-	ws := &WebServer{
-		WSServer:      server,
-		Clients:       make(map[string]*WSClient),
-		GraphQLServer: gsrv,
-		Context:       ctx,
-		ContextCancel: ctxCancel,
-	}
-	ws.initHandlers()
+	defer ctxCancel()
 
-	return ws, nil
+	gc, err := ws.gqlServer.BuildClient(ctx, sendQueue, &RootQueryResolver{}, nil)
+	if err != nil {
+		log.WithError(err).Error("Unable to build client")
+		return
+	}
+	client := &WSClient{
+		id:        id,
+		ctx:       ctx,
+		ctxCancel: ctxCancel,
+		server:    ws,
+		sock:      conn,
+		sendQueue: sendQueue,
+		gqlClient: gc,
+	}
+	ws.clients[id] = client
+	ws.clientsMtx.Unlock()
+
+	client.initHandlers(ws.clientDisposed)
+	go client.writePump()
+	client.readPump()
 }
 
-func (ws *WebServer) initHandlers() {
-	s := ws.WSServer
-	s.On("connection", func(so socketio.Socket) {
-		id := so.Id()
-
-		ws.ClientsMtx.Lock()
-		defer ws.ClientsMtx.Unlock()
-
-		if _, ok := ws.Clients[id]; ok {
-			return
-		}
-
-		ctx, ctxCancel := context.WithCancel(ws.Context)
-		sendCh := make(chan *proto.RGQLServerMessage, 10)
-
-		client, err := ws.GraphQLServer.BuildClient(ctx, sendCh)
-		if err != nil {
-			log.WithError(err).Warn("Unable to build GraphQL client")
-			ctxCancel()
-			return
-		}
-
-		nc := &WSClient{
-			ctx:       ctx,
-			ctxCancel: ctxCancel,
-			server:    ws,
-			id:        id,
-			sock:      so,
-			client:    client,
-			sendCh:    sendCh,
-		}
-		go nc.sendWorker()
-
-		log.WithField("id", id).Debug("Client connected")
-		ws.Clients[id] = nc
-		nc.initHandlers(ws.clientDisposed)
-	})
-}
-
-func (ws *WebServer) clientDisposed(id string) {
-	ws.ClientsMtx.Lock()
-	cli, ok := ws.Clients[id]
-	if ok {
-		cli.ctxCancel()
-		delete(ws.Clients, id)
-	}
+func (ws *WebServer) clientDisposed(id uint32) {
+	ws.clientsMtx.Lock()
+	delete(ws.clients, id)
 	log.WithField("id", id).Debug("Client disconnected")
-	ws.ClientsMtx.Unlock()
+	ws.clientsMtx.Unlock()
 }
